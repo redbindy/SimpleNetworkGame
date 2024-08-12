@@ -543,40 +543,35 @@ LRESULT WndProc(const HWND hWnd, const UINT message, const WPARAM wParam, const 
 
 static void render()
 {
-	HANDLE mutex = CreateMutex(nullptr, false, nullptr);
-	{
-		const UINT stride = sizeof(BgVertex);
-		const UINT offset = 0;
+	const UINT stride = sizeof(BgVertex);
+	const UINT offset = 0;
 
-		spContext->IASetVertexBuffers(
-			0,
-			1,
-			&spBgVertexBuffer,
-			&stride,
-			&offset
-		);
+	spContext->IASetVertexBuffers(
+		0,
+		1,
+		&spBgVertexBuffer,
+		&stride,
+		&offset
+	);
 
-		spContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+	spContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-		spContext->VSSetShader(spVS, nullptr, 0);
+	spContext->VSSetShader(spVS, nullptr, 0);
 
-		spContext->RSSetViewports(1, &sViewport);
+	spContext->RSSetViewports(1, &sViewport);
 
-		spContext->PSSetShader(spPS, nullptr, 0);
-		spContext->PSSetShaderResources(0, 1, &spBgTextureView);
-		spContext->PSSetSamplers(0, 1, &spSampler);
-		spContext->PSSetConstantBuffers(0, 1, &spPlayer1PosBufferGPU);
-		spContext->PSSetConstantBuffers(1, 1, &spPlayer2PosBufferGPU);
+	spContext->PSSetShader(spPS, nullptr, 0);
+	spContext->PSSetShaderResources(0, 1, &spBgTextureView);
+	spContext->PSSetSamplers(0, 1, &spSampler);
+	spContext->PSSetConstantBuffers(0, 1, &spPlayer1PosBufferGPU);
+	spContext->PSSetConstantBuffers(1, 1, &spPlayer2PosBufferGPU);
 
-		spContext->UpdateSubresource(spPlayer1PosBufferGPU, 0, nullptr, &sPlayer1PosBufferCPU, 0, 0);
-		spContext->UpdateSubresource(spPlayer2PosBufferGPU, 0, nullptr, &sPlayer2PosBufferCPU, 0, 0);
+	spContext->UpdateSubresource(spPlayer1PosBufferGPU, 0, nullptr, &sPlayer1PosBufferCPU, 0, 0);
+	spContext->UpdateSubresource(spPlayer2PosBufferGPU, 0, nullptr, &sPlayer2PosBufferCPU, 0, 0);
 
-		spContext->Draw(BG_VERTEX_COUNT, 0);
+	spContext->Draw(BG_VERTEX_COUNT, 0);
 
-		spSwapChain->Present(1, 0);
-	}
-	assert(mutex != 0);
-	CloseHandle(mutex);
+	spSwapChain->Present(1, 0);
 }
 
 static void resizeScreen(const WORD width, const WORD height)
