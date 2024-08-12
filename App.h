@@ -9,8 +9,7 @@
 
 #include "Debug.h"
 
-#define SERVER (1)
-#define CLIENT (0)
+#define SERVER (true)
 
 namespace App
 {

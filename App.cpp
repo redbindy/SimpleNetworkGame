@@ -41,11 +41,8 @@ struct BgVertex
 
 struct ConstantBuffer
 {
-	XMFLOAT3 player1Pos;
-	float dummy1;
-
-	XMFLOAT3 player2Pos;
-	float dummy2;
+	XMFLOAT2 pos;
+	XMFLOAT2 dummy1;
 };
 static_assert(sizeof(ConstantBuffer) % 16 == 0, "");
 
@@ -61,8 +58,10 @@ static IDXGISwapChain* spSwapChain = nullptr;
 
 static ID3D11VertexShader* spVS = nullptr;
 
-static ConstantBuffer sConstantBufferCPU;
-static ID3D11Buffer* spConstantBufferGPU = nullptr;
+static ConstantBuffer sPlayer1PosBufferCPU;
+static ConstantBuffer sPlayer2PosBufferCPU;
+static ID3D11Buffer* spPlayer1PosBufferGPU = nullptr;
+static ID3D11Buffer* spPlayer2PosBufferGPU = nullptr;
 
 static ID3D11PixelShader* spPS = nullptr;
 
@@ -78,7 +77,13 @@ static D3D11_VIEWPORT sViewport;
 static ID3D11RenderTargetView* spRTV = nullptr;
 
 // 소켓
-static SOCKET sock;
+static SOCKET sSock;
+
+static HANDLE shPeerDataThread;
+static DWORD sPeerDataThreadID;
+
+static void updateMyData();
+static DWORD WINAPI updatePeerData(const LPVOID lpParam);
 
 void App::Initialize()
 {
@@ -120,6 +125,12 @@ void App::Initialize()
 		ASSERT(errorCode == ERROR_SUCCESS, "ShowWindow failed");
 
 		std::cout << "Window Creation Success" << std::endl;
+
+#if SERVER
+		SetWindowText(shWnd, TEXT("Server"));
+#else
+		SetWindowText(shWnd, TEXT("Client"));
+#endif
 	}
 
 	// D3D 초기화
@@ -254,18 +265,23 @@ void App::Initialize()
 		hr = spDevice->CreateBuffer(&bufferDesc, &initData, &spBgVertexBuffer);
 		ASSERT(SUCCEEDED(hr), "CreateBuffer for bgVertices failed");
 
-		sConstantBufferCPU.player1Pos = { -0.05f, 0.f, 0.f };
-		sConstantBufferCPU.player2Pos = { 0.05f, 0.f, 0.f };
+		sPlayer1PosBufferCPU.pos = { -0.05f, 0.f };
+		sPlayer2PosBufferCPU.pos = { 0.05f, 0.f };
 
 		bufferDesc.Usage = D3D11_USAGE_DEFAULT;
 		bufferDesc.ByteWidth = sizeof(ConstantBuffer);
 		bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-		bufferDesc.StructureByteStride = sizeof(XMMATRIX);
+		bufferDesc.StructureByteStride = sizeof(XMFLOAT2);
 
-		initData.pSysMem = &sConstantBufferCPU;
+		initData.pSysMem = &sPlayer1PosBufferCPU;
 
-		hr = spDevice->CreateBuffer(&bufferDesc, &initData, &spConstantBufferGPU);
-		ASSERT(SUCCEEDED(hr), "CreateBuffer for constantBuffer failed");
+		hr = spDevice->CreateBuffer(&bufferDesc, &initData, &spPlayer1PosBufferGPU);
+		ASSERT(SUCCEEDED(hr), "CreateBuffer for player1Pos failed");
+
+		initData.pSysMem = &sPlayer2PosBufferCPU;
+
+		hr = spDevice->CreateBuffer(&bufferDesc, &initData, &spPlayer2PosBufferGPU);
+		ASSERT(SUCCEEDED(hr), "CreateBuffer for player2Pos failed");
 
 		sViewport.TopLeftX = 0.f;
 		sViewport.TopLeftY = 0.f;
@@ -322,9 +338,8 @@ void App::Initialize()
 		};
 
 		WSADATA wsaData;
-		WSAStartup(MAKEWORD(2, 2), &wsaData);
 
-		int errorCode = WSAGetLastError();
+		int errorCode = WSAStartup(MAKEWORD(2, 2), &wsaData);
 		ASSERT(errorCode == ERROR_SUCCESS, "WSAStartup failed");
 
 #if SERVER
@@ -349,7 +364,7 @@ void App::Initialize()
 		if (errorCode == SOCKET_ERROR)
 		{
 			ASSERT(false, "bind failed");
-			
+
 			closesocket(listeningSock);
 			WSACleanup();
 
@@ -370,8 +385,8 @@ void App::Initialize()
 		sockaddr_in clientSockInfo;
 		int clientSize = sizeof(clientSockInfo);
 
-		sock = accept(listeningSock, reinterpret_cast<sockaddr*>(&clientSockInfo), &clientSize);
-		if (sock == INVALID_SOCKET)
+		sSock = accept(listeningSock, reinterpret_cast<sockaddr*>(&clientSockInfo), &clientSize);
+		if (sSock == INVALID_SOCKET)
 		{
 			ASSERT(false, "accept failed");
 
@@ -382,9 +397,9 @@ void App::Initialize()
 		}
 
 		closesocket(listeningSock);
-#elif CLIENT
-		sock = socket(AF_INET, SOCK_STREAM, 0);
-		if (sock == INVALID_SOCKET)
+#else
+		sSock = socket(AF_INET, SOCK_STREAM, 0);
+		if (sSock == INVALID_SOCKET)
 		{
 			ASSERT(false, "socket failed");
 
@@ -412,32 +427,52 @@ void App::Initialize()
 			return;
 		}
 
-		errorCode = connect(sock, reinterpret_cast<sockaddr*>(&hint), sizeof(hint));
+		errorCode = connect(sSock, reinterpret_cast<sockaddr*>(&hint), sizeof(hint));
 		if (errorCode == SOCKET_ERROR)
 		{
 			ASSERT(false, "connect fialed");
 
-			closesocket(sock);
+			closesocket(sSock);
 			WSACleanup();
 
 			return;
 		}
 #endif
+
+#if 0
 		DWORD recvTimeout = 17;
-		setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&recvTimeout, sizeof(recvTimeout));
+		setsockopt(sSock, SOL_SOCKET, SO_RCVTIMEO, (char*)&recvTimeout, sizeof(recvTimeout));
+#endif
+	}
+
+	// 스레드
+	{
+		shPeerDataThread = CreateThread(
+			nullptr,
+			0,
+			updatePeerData,
+			nullptr,
+			0,
+			&sPeerDataThreadID
+		);
+
+		DWORD errorCode = GetLastError();
+		ASSERT(errorCode == ERROR_SUCCESS, "CreateThread failed");
 	}
 }
 
 void App::Destroy()
 {
-	closesocket(sock);
+	CloseHandle(shPeerDataThread);
+
+	closesocket(sSock);
 	WSACleanup();
 
 	ReleaseCOM(spRTV);
 	ReleaseCOM(spBgTextureView);
 	ReleaseCOM(spBgTexture);
 	ReleaseCOM(spBgVertexBuffer);
-	ReleaseCOM(spConstantBufferGPU);
+	ReleaseCOM(spPlayer1PosBufferGPU);
 	ReleaseCOM(spVS);
 	ReleaseCOM(spPS);
 	ReleaseCOM(spSwapChain);
@@ -447,7 +482,6 @@ void App::Destroy()
 
 static void render();
 static void resizeScreen(const WORD width, const WORD height);
-static void update();
 
 int App::Run()
 {
@@ -466,7 +500,7 @@ int App::Run()
 		}
 		else
 		{
-			update();
+			updateMyData();
 			render();
 		}
 	}
@@ -474,8 +508,7 @@ int App::Run()
 	return (int)msg.message;
 }
 
-static bool sbKeyPressedServer[UINT8_MAX];
-static bool sbKeyPressedClient[UINT8_MAX];
+static bool sbKeyPressed[UINT8_MAX];
 
 LRESULT WndProc(const HWND hWnd, const UINT message, const WPARAM wParam, const LPARAM lParam)
 {
@@ -489,66 +522,64 @@ LRESULT WndProc(const HWND hWnd, const UINT message, const WPARAM wParam, const 
 		break;
 
 	case WM_KEYDOWN:
-#if SERVER
-		sbKeyPressedServer[wParam] = true;
-		send(sock, (char*)sbKeyPressedServer, sizeof(sbKeyPressedServer), 0);
-#elif CLIENT
-		sbKeyPressedClient[wParam] = true;
-		send(sock, (char*)sbKeyPressedClient, sizeof(sbKeyPressedClient), 0);
-#endif
+		sbKeyPressed[wParam] = true;
 		break;
 
 	case WM_KEYUP:
-#if SERVER
-		sbKeyPressedServer[wParam] = false;
-		send(sock, (char*)sbKeyPressedServer, sizeof(sbKeyPressedServer), 0);
-#elif CLIENT
-		sbKeyPressedClient[wParam] = false;
-		send(sock, (char*)sbKeyPressedClient, sizeof(sbKeyPressedClient), 0);
-#endif
+		sbKeyPressed[wParam] = false;
 		break;
 
 	case WM_DESTROY:
+		App::Destroy();
 		PostQuitMessage(0);
 		break;
 
 	default:
 		return DefWindowProc(hWnd, message, wParam, lParam);
-}
+	}
 
 	return 0;
 }
 
-void render()
+static void render()
 {
-	const UINT stride = sizeof(BgVertex);
-	const UINT offset = 0;
+	HANDLE mutex = CreateMutex(nullptr, false, nullptr);
+	{
+		const UINT stride = sizeof(BgVertex);
+		const UINT offset = 0;
 
-	spContext->IASetVertexBuffers(
-		0,
-		1,
-		&spBgVertexBuffer,
-		&stride,
-		&offset
-	);
+		spContext->IASetVertexBuffers(
+			0,
+			1,
+			&spBgVertexBuffer,
+			&stride,
+			&offset
+		);
 
-	spContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+		spContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 
-	spContext->VSSetShader(spVS, nullptr, 0);
+		spContext->VSSetShader(spVS, nullptr, 0);
 
-	spContext->RSSetViewports(1, &sViewport);
+		spContext->RSSetViewports(1, &sViewport);
 
-	spContext->PSSetShader(spPS, nullptr, 0);
-	spContext->PSSetShaderResources(0, 1, &spBgTextureView);
-	spContext->PSSetSamplers(0, 1, &spSampler);
-	spContext->PSSetConstantBuffers(0, 1, &spConstantBufferGPU);
+		spContext->PSSetShader(spPS, nullptr, 0);
+		spContext->PSSetShaderResources(0, 1, &spBgTextureView);
+		spContext->PSSetSamplers(0, 1, &spSampler);
+		spContext->PSSetConstantBuffers(0, 1, &spPlayer1PosBufferGPU);
+		spContext->PSSetConstantBuffers(1, 1, &spPlayer2PosBufferGPU);
 
-	spContext->Draw(BG_VERTEX_COUNT, 0);
+		spContext->UpdateSubresource(spPlayer1PosBufferGPU, 0, nullptr, &sPlayer1PosBufferCPU, 0, 0);
+		spContext->UpdateSubresource(spPlayer2PosBufferGPU, 0, nullptr, &sPlayer2PosBufferCPU, 0, 0);
 
-	spSwapChain->Present(1, 0);
+		spContext->Draw(BG_VERTEX_COUNT, 0);
+
+		spSwapChain->Present(1, 0);
+	}
+	assert(mutex != 0);
+	CloseHandle(mutex);
 }
 
-void resizeScreen(const WORD width, const WORD height)
+static void resizeScreen(const WORD width, const WORD height)
 {
 	using namespace App;
 
@@ -575,87 +606,67 @@ void resizeScreen(const WORD width, const WORD height)
 	spContext->OMSetRenderTargets(1, &spRTV, nullptr);
 }
 
-static float clamp(const float value, const float min, const float max);
-static void updatePosition();
+constexpr float DELTA_DIST = 0.005f;
 
-constexpr float deltaDist = 0.005f;
-
-static void update()
+static void updateMyData()
 {
 #if SERVER
-	recv(sock, (char*)sbKeyPressedClient, sizeof(sbKeyPressedClient), 0);
-#elif CLIENT
-	recv(sock, (char*)sbKeyPressedServer, sizeof(sbKeyPressedServer), 0);
+	if (sbKeyPressed[VK_UP])
+	{
+		sPlayer1PosBufferCPU.pos.y -= DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_DOWN])
+	{
+		sPlayer1PosBufferCPU.pos.y += DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_LEFT])
+	{
+		sPlayer1PosBufferCPU.pos.x -= DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_RIGHT])
+	{
+		sPlayer1PosBufferCPU.pos.x += DELTA_DIST;
+	}
+
+	send(sSock, (char*)(&sPlayer1PosBufferCPU.pos), sizeof(ConstantBuffer::pos), 0);
+#else
+	if (sbKeyPressed[VK_UP])
+	{
+		sPlayer2PosBufferCPU.pos.y += DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_DOWN])
+	{
+		sPlayer2PosBufferCPU.pos.y -= DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_LEFT])
+	{
+		sPlayer2PosBufferCPU.pos.x -= DELTA_DIST;
+	}
+
+	if (sbKeyPressed[VK_RIGHT])
+	{
+		sPlayer2PosBufferCPU.pos.x += DELTA_DIST;
+	}
+
+	send(sSock, (char*)(&sPlayer2PosBufferCPU.pos), sizeof(ConstantBuffer::pos), 0);
 #endif
-	updatePosition();
-
-	spContext->UpdateSubresource(spConstantBufferGPU, 0, nullptr, &sConstantBufferCPU, 0, 0);
 }
 
-static float clamp(const float value, const float min, const float max)
+static DWORD WINAPI updatePeerData(const LPVOID lpParam)
 {
-	if (value < min)
+	while (true)
 	{
-		return min;
+#if SERVER
+		recv(sSock, (char*)(&sPlayer2PosBufferCPU.pos), sizeof(ConstantBuffer::pos), 0);
+#else
+		recv(sSock, (char*)(&sPlayer1PosBufferCPU.pos), sizeof(ConstantBuffer::pos), 0);
+#endif
 	}
 
-	if (value > max)
-	{
-		return max;
-	}
-
-	return value;
-}
-
-static void updatePosition()
-{
-	if (sbKeyPressedServer[VK_UP])
-	{
-		sConstantBufferCPU.player1Pos.y -= deltaDist;
-	}
-
-	if (sbKeyPressedServer[VK_DOWN])
-	{
-		sConstantBufferCPU.player1Pos.y += deltaDist;
-	}
-
-	if (sbKeyPressedServer[VK_LEFT])
-	{
-		sConstantBufferCPU.player1Pos.x -= deltaDist;
-	}
-
-	if (sbKeyPressedServer[VK_RIGHT])
-	{
-		sConstantBufferCPU.player1Pos.x += deltaDist;
-	}
-
-	if (sbKeyPressedClient[VK_UP])
-	{
-		sConstantBufferCPU.player2Pos.y += deltaDist;
-	}
-
-	if (sbKeyPressedClient[VK_DOWN])
-	{
-		sConstantBufferCPU.player2Pos.y -= deltaDist;
-	}
-
-	if (sbKeyPressedClient[VK_LEFT])
-	{
-		sConstantBufferCPU.player2Pos.x -= deltaDist;
-	}
-
-	if (sbKeyPressedClient[VK_RIGHT])
-	{
-		sConstantBufferCPU.player2Pos.x += deltaDist;
-	}
-
-	sConstantBufferCPU.player1Pos.x = clamp(sConstantBufferCPU.player1Pos.x, -1.f, 1.f);
-	sConstantBufferCPU.player1Pos.y = clamp(sConstantBufferCPU.player1Pos.y, -1.f, 1.f);
-	sConstantBufferCPU.player1Pos.x = clamp(sConstantBufferCPU.player1Pos.x, -1.f, 1.f);
-	sConstantBufferCPU.player1Pos.y = clamp(sConstantBufferCPU.player1Pos.y, -1.f, 1.f);
-
-	sConstantBufferCPU.player2Pos.x = clamp(sConstantBufferCPU.player2Pos.x, -1.f, 1.f);
-	sConstantBufferCPU.player2Pos.y = clamp(sConstantBufferCPU.player2Pos.y, -1.f, 1.f);
-	sConstantBufferCPU.player2Pos.x = clamp(sConstantBufferCPU.player2Pos.x, -1.f, 1.f);
-	sConstantBufferCPU.player2Pos.y = clamp(sConstantBufferCPU.player2Pos.y, -1.f, 1.f);
+	return 0;
 }

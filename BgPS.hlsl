@@ -3,11 +3,14 @@
 Texture2D tex : register(t0);
 SamplerState samplerState : register(s0);
 
-cbuffer ConstantBuffer : register(b0)
+cbuffer player1PosBuffer : register(b0)
 {
-    float3 player1Pos;
-    float dummy1;
-    float3 player2Pos;
+    float2 player1Pos;
+}
+
+cbuffer player1PosBuffer : register(b1)
+{
+    float2 player2Pos;
 }
 
 float4 main(PSInput input) : SV_TARGET
@@ -15,8 +18,11 @@ float4 main(PSInput input) : SV_TARGET
     const float RADIUS = 0.03f;
     const float RADIUS_SQ = RADIUS * RADIUS;
     
-    const float2 p1Diff = player1Pos.xy - input.worldXY;
-    const float2 p2Diff = player2Pos.xy - input.worldXY;
+    const float2 pos1 = clamp(player1Pos, -1.f, 1.f);
+    const float2 pos2 = clamp(player2Pos, -1.f, 1.f);
+    
+    const float2 p1Diff = pos1 - input.worldXY;
+    const float2 p2Diff = pos2 - input.worldXY;
     
     const float p1DistSq = dot(p1Diff, p1Diff);
     const float p2DistSq = dot(p2Diff, p2Diff);
@@ -32,7 +38,7 @@ float4 main(PSInput input) : SV_TARGET
     else
     {
         const float2 camPos = RemapRangeVec2(
-            player1Pos.xy,
+            pos1,
             float2(-1.f, -1.f),
             float2(1.f, 1.f),
             float2(0.f, 0.f),
